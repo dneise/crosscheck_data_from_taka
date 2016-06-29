@@ -3,58 +3,55 @@ Usage:
   calc_local_tc.py [options]
 
 Options:
-  -i PATH  path to file with sine wave, to be analysed [default: SinWithHighOffset2.dat]
-  -c PATH  path to textfile with offsets ala Taka, to be subtracted [default: Ped300Hz_forSine.dat]
-  -o PATH  path to outfile for the cell widths [default: local_tc.csv]
+  -i PATH      path to file with sine wave, to be analysed [default: SinWithHighOffset2.dat]
+  -c PATH      path to textfile with offsets ala Taka, to be subtracted [default: Ped300Hz_forSine.dat]
+  -o PATH      path to outfile for the cell widths [default: local_tc.csv]
+  --pixel N    pixel in which the sine wave should be analysed [default: 0]
+  --gain NAME  gain type which should be analysed [default: high] 
 """
-
-# IPython log file
-
 import dragonboard as dr
-import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
-import time
-
 from docopt import docopt
+import pandas as pd
+
 
 args = docopt(__doc__)
 print(args)
-eg = dr.EventGenerator(args["-i"])
-a = np.genfromtxt(args["-c"])
-ped_h0 = a[:,0]
+event_generator = dr.EventGenerator(args["-i"])
+calib = dr.calibration.TakaOffsetCalibration(args["-c"])
 
-tis = [[] for i in range(1024)]
+pixel = int(args["--pixel"])
+gain = args["--gain"]
+assert gain in ["high", "low"]
 
-for e in tqdm(eg):
-    d = e.data[0]["high"]
-    sc = e.header.stop_cells[0]["high"]
+
+all_slopes = [[] for i in range(1024)]
+
+for event in tqdm(event_generator):
+    event = calib(event)
+    calibrated = event.data[pixel][gain]
     
-    calibrated = d - np.roll(ped_h0, -sc)[:eg.roi]
     zero_crossings = np.where(np.diff(np.signbit(calibrated)))[0]
-    before = calibrated[zero_crossings]
-    after = calibrated[zero_crossings + 1]
-    m = after - before
-    lam = -before/m
-    zero_crossings2 = zero_crossings + lam
+    slope = calibrated[zero_crossings + 1] - calibrated[zero_crossings]
+
+    zero_crossing_cells = dr.sample2cell(zero_crossings, 
+        stop_cell=event.header.stop_cells[pixel][gain], 
+        total_cells=1024)
     
-    deltas = np.diff(zero_crossings2)
+    for crossing_number, cell_id in enumerate(zero_crossing_cells):
+        all_slopes[cell_id].append(np.abs(slope[crossing_number]))
 
-    cells = (sc + zero_crossings) % 1024
-    for i, c in enumerate(cells):
-        tis[c].append(np.abs(m[i]))
+slope_mean = np.zeros(1024)
+slope_std = np.zeros(1024)
+for cell_id, slopes in enumerate(all_slopes):
+    slopes = np.array(slopes)
+    slope_mean[cell_id] = slopes.mean()
+    slope_std[cell_id] = slopes.std() / np.sqrt(len(slopes))
 
-mtis = np.zeros(1024)
-stis = np.zeros(1024)
-for i,t in enumerate(tis):
-    t = np.array(t)
-    mtis[i] = t.mean()
-    stis[i] = t.std()
-    tis[i] = t
+pd.DataFrame({
+    "cell_width_mean": slope_mean / slope_mean.mean(),
+    "cell_width_std": slope_std /  slope_mean.mean(),
+    }
+    ).to_csv(args["-o"], index=False)
 
-ti = mtis / mtis.mean()
-
-import pandas as pd
-
-ti = pd.DataFrame(ti, columns=["cell_width"])
-ti.to_csv(args["-o"], index=False)
