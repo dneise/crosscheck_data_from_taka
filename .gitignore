@@ -87,3 +87,10 @@ ENV/
 
 # Rope project settings
 .ropeproject
+
+LnG40.dat
+Ped300Hz.dat
+Ped300Hz_forSine.dat
+README
+SinWithHighOffset2.dat
+report.pdf
