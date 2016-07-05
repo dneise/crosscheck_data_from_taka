@@ -1,5 +1,6 @@
 import numpy as np
 from collections import namedtuple
+import pandas as pd
 
 Event = namedtuple(
     'Event', ['header', 'roi', 'data', 'time_since_last_readout']
@@ -16,16 +17,24 @@ EventHeader_v5_1_05 = namedtuple('EventHeader_v5_1_05', [
 
 class FakeEventGenerator:
 
-    def __init__(self, trigger_times, pixel=0, gain="high", roi=1024):
+    def __init__(self, trigger_times, pixel=0, gain="high", roi=1024, random_phase=True, sine_frequency=30e6):
         self.times = list(trigger_times)
         self.max_events = len(trigger_times)
         self.roi = roi
         self.pixel = pixel
         self.gain = gain
         self.event_counter = 0
+        self.random_phase = random_phase
+        self.sine_frequency = sine_frequency
 
         np.random.seed(0)
-        self.cell_widths = np.ones(1024) * 1e-9 + np.random.uniform(-0.5e-9, 0.5e-9, 1024)
+
+        tc = pd.read_csv("local_tc.csv")
+        cell_width = tc.cell_width_mean.values
+        cell_width = np.clip(cell_width, 0.3, 1.7)
+        cell_width /= (cell_width.mean() / 1e-9)
+        self.cell_widths = cell_width
+        #self.cell_widths = np.ones(1024) * 1e-9 + np.random.uniform(-0.5e-9, 0.5e-9, 1024)
         self.cell_widths /= self.cell_widths.mean()
         self.cell_widths *= 1e-9
         self.nominal_width = self.cell_widths.mean()
@@ -35,9 +44,15 @@ class FakeEventGenerator:
         return self.max_events
 
     def sine_wave(self, times, amplitude=1500):
-        omega = 30e6
-        phase = np.random.uniform()
-        return amplitude * np.sin(2 * np.pi * (omega * times + phase))
+        omega = self.sine_frequency
+        if self.random_phase:
+            phase = np.random.uniform()
+        else:
+            phase = 0
+        
+        signal = amplitude * np.sin(2 * np.pi * (omega * times + phase))
+        signal += np.random.normal(0, 10, len(signal)).round().astype(np.int32)
+        return signal
 
     def __iter__(self):
         return self
