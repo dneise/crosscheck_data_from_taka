@@ -47,16 +47,26 @@ The term "DRS4 time calibration" typically involves two parts:
  1. Measurement of individual sample delays $d_i$ for all cells of a DRS4 chip.
  2. Application of the $d_i$ to mitigate the effects of inhomogeneous sampling.
 
-In order to measure the $d_i$ typically a known periodic signal is sampled, which can be used to infer the individual sample delays. 
-Several methods exist. For this crosscheck two methods shown in e.g. 
+In order to measure the $d_i$ typically a known periodic signal is sampled, 
+which can be used to infer the individual sample delays. 
+Several methods exist for calculating the sample delays. 
+For this study the two methods shown in e.g. 
 [Novel Calibration Method for Switched Capacitor Arrays Enables Time Measurements With Sub-Picosecond Resolution](http://arxiv.org/pdf/1405.4975v3.pdf)[2] 
-shall be used:
-
-
-
+shall be used. 
+In addition one variation of the global time calibration named QR_TC, 
+which was developed during the course of this study will be compared.
 
  1. Local time calibration, based on the slope of the calibration signal close to a zero crossing.
  2. Global time calibration, based on the number of cells between two (or more) zero crossings.
+ 3. QR time calibration, also based on the number of cells between two (or more) zero crossings.
+
+Further methods do exist, but were not (yet) included in this study, these for example:
+
+ * Infering the sample delay by measuring the time between stop cell and a test pulse.
+ * Infering the sample delay by measuring the frequency of test pulse features near a certain cell
+ * Infering the sample delay by measuring the stop cell frequency near a certain cell.
+
+In the following sub sections, the 3 methods used in this study will be shortly introduced.
 
 ### Local Time calibration
 
@@ -110,8 +120,39 @@ but generally N period intervals can be used to learn about cell widths. This im
 
 Our implementation can be found in 'calc_global_tc.py'.
 
+### QR Time Calibration
 
-### DRS4 Offset calibration
+This method start with the same idea as the Global Time Calibration.
+When sampling one period (or many periods) of a known periodic signal and assigning weights to those cells, which took part in
+sampling the period in question, one can infer the individual cell width from many observations of this kind.
+
+Assume the k-th observation or period $k$ or known length $p$. During this observation, the first zero crossing (rising slope) 
+occured between cells 10 and 11, the second zero crossing with rising slope occured between cells 43 and 44. 
+By simple linear interpolation we find the first zero crossing at 10.3 (unit: "nominal sample width") 
+and the end of the period is found to be at 43.5. Thus we can assign for this observation weights to all cells, 
+according to their contribution to this period. In this case we would have:
+
+ * $w_{10,k} = 0.7$
+ * $w_{11,k} = 1$
+ * ...
+ * $w_{42,k} = 1 $
+ * $w_{43,k} = 0.5$
+
+All other weigths are zero. Since we know the time of one period of the calibration signal is 33.33 ns we can write:
+
+  $\sum_{i=0}^{1023} w_{i,k} \cdot d_i = p = 33.33$ ns.
+
+This is one equation in a set of linear equations, we can derive by observing many different periods.
+By solving this LEQS for the unknown $d_i$, with any method we like, we are done.
+
+Since the weights are mostly zero, the weight matrix of this LEQS is very sparse. 
+So in order to keep the memory footprint of this method as low as possible,
+I used `scipy.sparse.linalg.lsqr`  to solve this system.
+[Lsqr](https://www.stat.uchicago.edu/~lekheng/courses/324/paige-saunders2.pdf)
+is a nice and fast iterative equation solver for large sparse matrices. 
+
+
+## DRS4 Offset calibration
 
 In order to use DRS4 sampled data, one should apply some form of amplitude calibration. The DRS4 storage cell output buffers show an 
 inhomogeneous offset and gain distribution. In addition time dependent offsets can be observed, 
@@ -162,40 +203,15 @@ for event in event_generator:
 ```
 \newpage$
 
-## Result of Local and Global TC
+## Results
 
 Before learning about the effect of the individual cell width, 
 or sample delays $d_i$ on the extracted charge resolution, 
 first the cell widths need to be measured. 
-By applying the methods "Local TC" and "Global TC" on the same data, 
-we get some form of self crosscheck. 
 
-The user interface should be shown using `calc_local_tc.py` as an example, the CLI for `calc_global_tc.py` is very similar:
+By applying the 3 methods to the same data, we get some form of self crosscheck.
 
-```bash
-dneise@lair:~/LST/crosscheck_data_from_taka$ ./calc_local_tc.py --help
-Usage:
-  calc_local_tc.py [options]
-
-Options:
-  -i PATH      path to file with sine wave, to be analysed [default: SinWithHighOffset2.dat]
-  -c PATH      path to textfile with offsets ala Taka, to be subtracted [default: Ped300Hz_forSine.dat]
-  -o PATH      path to outfile for the cell widths [default: local_tc.csv]
-  --pixel N    pixel in which the sine wave should be analysed [default: 0]
-  --gain NAME  gain type which should be analysed [default: high]
-  --fake       use FakeEventGenerator, ignores '-i' and '-c'.
-```
-
-Sane default parameters have been chosen, to make calling the programs easy and serve as an implicit kind of documentation. 
-As one can see the program simply assumes a file named `SinWithHighOffset2.dat` to exist in the current working directory. 
-This makes sense, as the scope of this project is very narrow.
-However the user may specify another input file as well. 
-The `--pixel` parameter can be used, to perform the analysis based on another pixel, by default pixel 0 is analyzed. 
-The `--gain` parameter can be used, if e.g. the low gain branch should be used.
-The `--fake` parameter is a very recent addition and will be explained further below.
-
-
-The result of the analysis is basically the cell width $d_i$. It is stored in a csv file, 
+The result of the `calc_*_tc.py` scripts is basically the cell width $d_i$. It is stored in a csv file, 
 to allow for quick analysis using any analysis framework from matlab to excel. 
 If one would like to use Python, the csv file can be read e.g. with pandas using:
 
@@ -220,14 +236,15 @@ An output filename can, at the moment, not be specified.
 
 Here one can see the current results.
 
-![local_tc.png](local_tc.png "local_tc.png"){ width=50% }
-![global_tc.png](global_tc.png "global_tc.png"){ width=50% }
+![local_tc.png](local_tc.png "local_tc.png"){ width=30% }
+![global_tc.png](global_tc.png "global_tc.png"){ width=30% }
+![qr_tc.png](qr_tc.png "qr_tc.png"){ width=30% }
 
-While in the former revision of this crosscheck there were clear similarities between the two results, this is not the case anymore.
+While in the former revision of this crosscheck there were clear similarities 
+between local and global TC, this is not the case anymore.
 The cumulative cell delay deviations from global_tc.csv shown in the 2nd axis from the top, show a sharp peak around cell ~320. 
 The position of this peak happens to coincide with the stop cell position of the last event, being analyzed. 
-
-So we do not trust the global TC method at the moment.
+So we do not trust the global TC method at the moment. There must be an error in the implementation.
 
 ## Evaluation by Simulation
 
@@ -253,15 +270,19 @@ This delivers very good and reliable results, since it is ensured, that all cell
 It is however possible to switch off the random phase and see what impact this has on the analysis.
 Also a certain amount of electronics noise is added to the sampled sine wave, white noise with $\sigma=10 LSB$ is the default.
 
-The cell_widths used by the `FakeEventGenerator` can either be random, or be taken from a csv file. This way one can simulate how both methods work under the assumption that one of the methods provided a correct result.
-
+The cell_widths used by the `FakeEventGenerator` can either be random, 
+or be taken from a csv file. 
+This way one can simulate how the methods work under the assumption that e.g. the local tc method provided a correct result.
 Using `local_tc.csv` as input for the `FakeEventGenerator` the plots look like this
 
-![local_tc_fake.png](local_tc_fake.png "local_tc_fake.png"){ width=50% }
-![global_tc_fake.png](global_tc_fake.png "global_tc_fake.png"){ width=50% }
+![local_tc_fake.png](local_tc_fake.png "local_tc_fake.png"){ width=30% }
+![global_tc_fake.png](global_tc_fake.png "global_tc_fake.png"){ width=30% }
+![qr_tc_fake.png](qr_tc_fake.png "qr_tc_fake.png"){ width=30% }
 
-As one can see, when working on simulated data, both methods perform reasonable a reproduce the simulated cell widths rather well.
-The local TC method shows a smaller residual distribution with a $\sigma=4ps$ only, while the global TC shows a $\sigma = 51ps$.
+As one can see, when working on simulated data, all methods perform reasonable and reproduce the 
+simulated cell widths rather well.
+The local TC method shows a smaller residual distribution with a $\sigma=4ps$ only, 
+while the global TC shows a $\sigma = 51ps$.
 For correctly measuring the arrival time of a pulse, say in the middle of a sampled wave form of 30 samples, 
 it is important to know the sum of 15 consecutive cells, rather than the width of each individual cell. 
 As an example the residuals for sums over 15 consecutive cells are shown in green. 
@@ -276,43 +297,49 @@ error in the implementation of the global TC.
 However the results of the evaluation of the local TC method based on simulations shows, 
 that this method is able to measure the individual cell widths with an uncertainty of about 4 ps.
 
-## Application to test pulse data.
+## Application to test pulse data
 
-A small script has been written `extract_pulses.py` which extracts some parameters from a raw-file containing test pulses. Only a single pixel / gain combination can be analysed with this simple script. For further options please refer to the help, e.g.:
-
-    dneise@lair:~/LST/DataFromTaka$ python extract_pulses.py --help
-    Usage:
-      extract_pulses.py [options]
-
-    Options:
-      --input PATH    path to file containing test pulses [default: LnG40.dat]
-      --offset PATH   path to textfile with offset ala Taka, to be subtracted [default: Ped300Hz.dat]
-      --tc PATH       path to csv containting cell_widths [default: local_tc.csv]
-      --channel N     channel number to be analyszed [default: 0]
-      --gain NAME     name of gain_type to be analysed. high/low [default: high]
-      --maxevents N   number of events to be used [default: all]
-      --int_window N  size of integration window [default: 5]
+A small script has been written `extract_pulses.py` which extracts 
+some parameters from a raw-file containing test pulses. 
+Only a single pixel / gain combination can be analysed with this simple script. 
+For further options please refer to the help.
 
 The script produces two plots, named `charge_resolution_{tc_filename}.png` and `time_resolution_{tc_filename}.png`. 
 
-First let us look at the charge resolutions. On the left side we see the result using the local TC. On the right side the results obtained using the global TC are shown. 
-As already reported by Taka on slide 18 in [1], the distribution of the integral (using an integration window of 5 samples centered around the maximum) is with 7% too wide. 
+First let us look at the charge resolutions. 
+As already reported by Taka on slide 18 in [1], 
+the distribution of the integral 
+(using an integration window of 5 samples centered around the maximum) 
+is with 6.6% too wide. 
 
-In order to mitigate the effects of inhomogeneous sampling the integral was weighted with the individual sampling delays of the involved cells, leading to a smaller width of the distribution, as already reported by Taka. The result of Taka (2%) was not reproduced. Different other methods have been tried, in order to reach the width of 2%. Convoluting the sampled time series with a template of the test pulse delived a nice width, but is computationally expensive. 
+
+In order to mitigate the effect of inhomogeneous sampling the integral was estimated using the simple rectangle method.
+The value of each sample $v_i$ was weighted not with the cell width $d_i$, 
+which would be the time between sample $i$ and $i+1$, 
+but with the width of a bin, having sample $i$ in its center.
+So the width for sample i was $(d_{i-1} + d_i)/2$.
+The distribution of this weigthed integral is much smaller $\sigma = 2.8\%$.
 
 
-![charge_resolution_local_tc.png](charge_resolution_local_tc.png "charge_resolution_local_tc.png"){ width=50% }
-![charge_resolution_global_tc.png](charge_resolution_global_tc.png "charge_resolution_global_tc.png"){ width=50% }
+Several other methods have been tried, like trapezoidal integration, simpsons rule, 
+convolution of the waveform with a pulse template. 
+As one can see the distribution of charges calculated using simpsons rule, creates a narrow main distribution, 
+with many outliers. When ignoring the outliers, one ends up with $\sigma \approx 1.5\%$.
+One gets about 660 values outside the 3 $\sigma$ range, while 50 are expected.
 
-This is the pulse template used for the convolution method shown in light blue.
-It can be obtained using `find_pulse_template.py`.
+By convoluting a high resolution pulse template, with an artificially 
+10GHz homogeneously re-sampled waveform (by simple linear interpolation) a resolution of $\approx 2.4 \%$ 
+could be achieved, but this method is computationally intensive and depends on a pulse template. 
+So it was dropped from this study.
 
-![pulse_template.png](pulse_template.png "pulse_template.png"){ width=50% }
+![charge_resolution_local_tc.png](charge_resolution_local_tc.png "charge_resolution_local_tc.png"){ width=30% }
+![charge_resolution_global_tc.png](charge_resolution_global_tc.png "charge_resolution_global_tc.png"){ width=30% }
+![charge_resolution_qr_tc.png](charge_resolution_qr_tc.png "charge_resolution_qr_tc.png"){ width=30% }
 
-It was interesting to see, that the test pulse is a rectangular pulse of ~2.5ns width.
+The time resolutions are not particularly interesting as the arrival time 
+distribution using only a single channel is expected to be largely unaffected of the inhomogeneous sampling.
 
-The time resolutions are not particularly interesting as the arrival time distribution using only a single channel is expected to be largely unaffected of the inhomogeneous sampling.
-
-![time_resolution_local_tc.png](time_resolution_local_tc.png "time_resolution_local_tc.png"){ width=50% }
-![time_resolution_global_tc.png](time_resolution_global_tc.png "time_resolution_global_tc.png"){ width=50% }
+![time_resolution_local_tc.png](time_resolution_local_tc.png "time_resolution_local_tc.png"){ width=30% }
+![time_resolution_global_tc.png](time_resolution_global_tc.png "time_resolution_global_tc.png"){ width=30% }
+![time_resolution_qr_tc.png](time_resolution_qr_tc.png "time_resolution_qr_tc.png"){ width=30% }
 

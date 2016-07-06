@@ -21,12 +21,29 @@ from docopt import docopt
 from scipy.interpolate import interp1d
 from matplotlib.colors import LogNorm
 import hist2d
+from functools import partial
+import scipy
+
 
 def digital_leading_edge_discriminator(data, time, threshold=0, window_length=0):
     z = np.where(np.diff(np.signbit(data-threshold)))[0][0]
-    s = slice(z-window_length, z+2+window_length)
-    m, b = np.polyfit(time[s], data[s], deg=1)
-    return (threshold-b)/m
+    if window_length == 0:  
+        # There is no data to fit, so we simply do it by and ... saving time.
+        time_before = time[z]
+        time_after = time[z+1]
+        value_before = data[z]
+        value_after = data[z+1]
+
+        slope = (value_after - value_before)/(time_after - time_before)
+
+        # value = value_before + delta_time * slope
+        # threshold = value_before + delta_time_0 * slope
+        delta_time_0 = (threshold - value_before) / slope
+        return time_before + delta_time_0
+    else:
+        s = slice(z-window_length, z+2+window_length)
+        m, b = np.polyfit(time[s], data[s], deg=1)
+        return (threshold-b)/m
 
 args = docopt(__doc__)
 args["--channel"] = int(args["--channel"])
@@ -45,11 +62,15 @@ template_orig = pd.read_csv("pulse_dataframe.csv")
 template = template_orig["pulse_mode"].values[60:180]
 template /= template.max()
 
+tc_base_name = args["--tc"][:-4]
 
 offset = np.genfromtxt(args["--offset"])[:,0]
 # trick to omit np.roll
 offset = np.concatenate((offset, offset))
 cell_width = np.concatenate([cell_width]*5)
+
+# for midpoint_rule each sample v_i gets mutiplied with 1/2 * (d_{i-1} + d_i)
+midpoint_width = 1/2 * (cell_width + np.roll(cell_width, -1))
 
 half_integration_window = (args["--int_window"] - 1) // 2
 
@@ -57,154 +78,68 @@ half_integration_window = (args["--int_window"] - 1) // 2
 ch = args["--channel"]
 gain = args["--gain"]
 
-trapz = []
-run = dr.EventGenerator(args["--input"], max_events=args["--maxevents"])
-for event in progress_bar(run, leave=True, desc="trapz"):
-    raw_data = event.data[ch][gain]
-    stop_cell = event.header.stop_cells[ch][gain]
-    
-    t = cell_width[stop_cell:stop_cell+run.roi].cumsum()
-    calibrated = raw_data - offset[stop_cell:stop_cell+run.roi]
-    max_pos = np.argmax(calibrated)
-
-    s = slice(max_pos-half_integration_window, max_pos+half_integration_window+1)
-    trapz.append(np.trapz(calibrated[s], t[s]))
 
 
 run = dr.EventGenerator(args["--input"], max_events=args["--maxevents"])
-for event in progress_bar(run, leave=True, desc="--nothin--"):
-    raw_data = event.data[ch][gain]
-    stop_cell = event.header.stop_cells[ch][gain]
-    calibrated = raw_data - offset[stop_cell:stop_cell+run.roi]
-    t = cell_width[stop_cell:stop_cell+run.roi].cumsum()
+NN = min(len(run), args["--maxevents"])
 
-run = dr.EventGenerator(args["--input"], max_events=args["--maxevents"])
-for event in progress_bar(run, leave=True, desc="nothing + int"):
+integral = np.zeros(NN, dtype='f4')
+integral_weighted = np.zeros(NN, dtype='f4')
+max_pos = np.zeros(NN, dtype='i4')
+arrival_time = np.zeros(NN, dtype='f4')
+arrival_time_no_calib = np.zeros(NN, dtype='f4')
+trapz = np.zeros(NN, dtype='f4')
+simps = np.zeros(NN, dtype='f4')
+
+for i, event in enumerate(progress_bar(run, leave=True)):
     raw_data = event.data[ch][gain]
     stop_cell = event.header.stop_cells[ch][gain]
     calibrated = raw_data - offset[stop_cell:stop_cell+run.roi]
     t = cell_width[stop_cell:stop_cell+run.roi].cumsum()
 
-    interpolant = interp1d(t, calibrated)
-    new_times = np.linspace(50, 90, 401)
-    new_values = interpolant(new_times)
+    max_pos[i] = np.argmax(calibrated)
 
-
-conv_maxes = []
-time_of_max_convolutions = []
-run = dr.EventGenerator(args["--input"], max_events=args["--maxevents"])
-for event in progress_bar(run, leave=True, desc="conv, time_of_max_convolutions"):
-    raw_data = event.data[ch][gain]
-    stop_cell = event.header.stop_cells[ch][gain]
-    
-    calibrated = raw_data - offset[stop_cell:stop_cell+run.roi]
-    t = cell_width[stop_cell:stop_cell+run.roi].cumsum()
-
-    # pulse_template and new_values should have the same spacing
-    interpolant = interp1d(t, calibrated)
-    new_times = np.linspace(50, 90, 401)
-    new_values = interpolant(new_times)
-
-    conv = np.convolve(new_values, template, mode="valid")
-    conv_maxes.append(conv.max())
-    time_of_max_convolution = new_times[conv.argmax()]
-    time_of_max_convolutions.append(time_of_max_convolution)
-
-
-
-arrival_time = []
-arrival_time_no_calib = []
-run = dr.EventGenerator(args["--input"], max_events=args["--maxevents"])
-for event in progress_bar(run, leave=True, desc="arrival_time"):
-    raw_data = event.data[ch][gain]
-    stop_cell = event.header.stop_cells[ch][gain]
-    calibrated = raw_data - offset[stop_cell:stop_cell+run.roi]
-    t = cell_width[stop_cell:stop_cell+run.roi].cumsum()
-    arrival_time.append(digital_leading_edge_discriminator(data=calibrated, time=t, threshold=1000))
-    arrival_time_no_calib.append(digital_leading_edge_discriminator(data=calibrated, time=np.arange(len(calibrated)), threshold=1000))
-
-
-df = []
-run = dr.EventGenerator(args["--input"], max_events=args["--maxevents"])
-for event in progress_bar(run, leave=True, desc="max_pos, integral, int_weighted"):    
-    raw_data = event.data[ch][gain]
-    stop_cell = event.header.stop_cells[ch][gain]
-    calibrated = raw_data - offset[stop_cell:stop_cell+run.roi]
-    t = cell_width[stop_cell:stop_cell+run.roi].cumsum()
-
-    max_pos = np.argmax(calibrated)
-    s = slice(max_pos-half_integration_window, max_pos+half_integration_window+1)
-    integral = (calibrated[s]).sum()
-    
+    s = slice(max_pos[i]-half_integration_window, max_pos[i]+half_integration_window+1)
     samples = np.arange(s.start, s.stop)
-    cells = dr.sample2cell(samples, stop_cell, total_cells=1024)
-    weights = cell_width[cells]
+    cells = dr.sample2cell(samples, stop_cell, total_cells=1024)    
+    DLE = partial(digital_leading_edge_discriminator, data=calibrated, threshold=1000)
+
+    arrival_time[i] = DLE(time=t)
+    arrival_time_no_calib[i] = DLE(time=np.arange(len(calibrated)))
+    integral[i] = calibrated[s].sum()
+    integral_weighted[i] = (calibrated[s] * midpoint_width[cells]).sum()
+    trapz[i] = np.trapz(calibrated[s], t[s])
+    simps[i] = scipy.integrate.simps(calibrated[s], t[s])
+
+
+df = pd.DataFrame({
+    "integral": integral, 
+    "integral_weighted": integral_weighted, 
+    "max_pos": max_pos, 
+    "arrival_time": arrival_time, 
+    "arrival_time_no_calib": arrival_time_no_calib, 
+    "trapz": trapz,
+    "simps": simps,
+})
     
-    integral_weighted = (calibrated[s] * weights).sum()
-
-    df.append((
-        max_pos,
-        integral,
-        integral_weighted,
-        ))
-
-
-
-interpolated_integral = []
-run = dr.EventGenerator(args["--input"], max_events=args["--maxevents"])
-for event in progress_bar(run, leave=True, desc="interpolated_integral"):
-    raw_data = event.data[ch][gain]
-    stop_cell = event.header.stop_cells[ch][gain]
-    
-    calibrated = raw_data - offset[stop_cell:stop_cell+run.roi]
-    t = cell_width[stop_cell:stop_cell+run.roi].cumsum()
-
-    # pulse_template and new_values should have the same spacing
-    interpolant = interp1d(t, calibrated)
-    new_times = np.linspace(50, 90, 401)
-    new_values = interpolant(new_times)
-
-    interpolated_integral.append(np.trapz(new_values, new_times))
-
-
-
-
-df = pd.DataFrame(df, columns=[
-        "max_pos",
-        "integral",
-        "integral_weighted",
-    ])
-df["arrival_time"] = np.array(arrival_time)
-df["arrival_time_no_calib"] = np.array(arrival_time_no_calib)
-df["trapz"] = np.array(trapz)
-df["interpolated_integral"] = np.array(interpolated_integral)
-df["time_of_max_convolution"] = np.array(time_of_max_convolutions)
-df["conv"] = np.array(conv_maxes)
-df["conv"] /= df.conv.mean()
-df["conv"] *= 5000
-
-tc_name = args["--tc"][:-4]
-
 plt.figure()
-names=["integral", "integral_weighted", "interpolated_integral", "conv", "trapz"]
-
+names=["integral", "integral_weighted", "trapz", "simps"]
 for name in names: 
     rel_width_in_percent =  df[name].std()/df[name].mean() * 100
     plt.hist(df[name], bins=np.arange(3500, 6500, 20), histtype="step", log=False, label="{0}:$\sigma$={1:.1f}%".format(name, rel_width_in_percent))
 plt.grid()
-plt.legend()
+plt.legend(loc="best")
 plt.xlabel("charge [a.u.]")
-plt.title("Charge Resolution")
-plt.savefig("charge_resolution_{}.png".format(tc_name))
+plt.title("Charge Resolution with {}".format(tc_base_name))
+plt.savefig("charge_resolution_{}.png".format(tc_base_name))
 
 plt.figure()
-names = ["arrival_time", "arrival_time_no_calib","time_of_max_convolution"]
+names = ["max_pos", "arrival_time", "arrival_time_no_calib"]
 for name in names:
     width_in_ns =  df[name].std()
     plt.hist(df[name], bins=np.linspace(50, 65, 76), histtype="step", log=False, label="{0}:$\sigma$={1:.3f}ns".format(name, width_in_ns))
-
 plt.grid()
-plt.legend()
+plt.legend(loc="best")
 plt.xlabel("time [ns]")
-plt.title("Time Resolution")
-plt.savefig("time_resolution_{}.png".format(tc_name))
+plt.title("Time Resolution with {}".format(tc_base_name))
+plt.savefig("time_resolution_{}.png".format(tc_base_name))
