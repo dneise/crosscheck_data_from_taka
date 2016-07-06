@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 """
 Usage:
   calc_local_tc.py [options]
@@ -7,7 +8,10 @@ Options:
   -c PATH             path to textfile with offsets ala Taka, to be subtracted [default: Ped300Hz_forSine.dat]
   -o PATH             path to outfile for the cell widths [default: global_tc.csv]
   --local_tc P        path to local_tc.csv file, which can be used as a starting point
-  --max_iterations N  maximum number of iterations, after which to stop [default: 400]
+  --max_iterations N  maximum number of iterations, after which to stop [default: 10000]
+  --pixel N    pixel in which the sine wave should be analysed [default: 0]
+  --gain NAME  gain type which should be analysed [default: high]
+  --fake       use FakeEventGenerator, ignores '-c' and expects '-i' to point to something like local_tc.csv
 """
 import dragonboard as dr
 import matplotlib.pyplot as plt
@@ -17,78 +21,120 @@ import time
 import pandas as pd
 from docopt import docopt
 
-args = docopt(__doc__)
-args["--max_iterations"] = int(args["--max_iterations"])
-print(args)
-eg = dr.EventGenerator(args["-i"])
-a = np.genfromtxt(args["-c"])
 
-ped_h0 = a[:,0]
+def weight_on_edge(data, zxing):
+    """
+    This weight is independent of the cell_width. 
+    So even, when we have already a good estimation of the cell width, 
+    this weight does not need to take the width into account.
+    """
+    value_before = data[zxing]
+    value_after = data[zxing + 1]
+    slope = value_after - value_before
+    return - value_before / slope
 
 
-f_calib = 30e6 # in Hz
-unit_of_ti = 1e-9 # in seconds
 
-if args["--local_tc"]:
-    ti = pd.read_csv(args["--local_tc"])["cell_width"].values
-else:
-    ti = np.ones(1024)
+def calc_global_tc(event_generator, calib, pixel, gain, cell_width_guess):
+    f_calib = 30e6 # in Hz
+    unit_of_ti = 1e-9 # in seconds
+    nominal_period = 1 / (f_calib * unit_of_ti)
 
-for evt in tqdm(eg, total=args["--max_iterations"]):
-    d = evt.data[0]["high"]
-    sc = evt.header.stop_cells[0]["high"]
+    cell_width = np.copy(cell_width_guess) 
+    T = cell_width.sum()
+    stop_cells = np.zeros(1024, dtype=int)
+
+    number_of_zxings_per_cell = np.zeros(1024, dtype=int)
+
+    for event in tqdm(event_generator):
+        event = calib(event)
+        calibrated = event.data[pixel][gain]
+        stop_cell = event.header.stop_cells[pixel][gain]
+        stop_cells[stop_cell % 1024] += 1
+        zero_crossings = np.where(np.diff(np.signbit(calibrated)))[0]
+        number_of_zxings_per_cell[(zero_crossings+stop_cell)%1024] += 1
+
+        for zxing_type in [zero_crossings[0::2], zero_crossings[1::2]]:
+            for start, end in zip(zxing_type[:-1], zxing_type[1:]):
+
+                N = end - start + 1
+                weights = np.zeros(1024)
+                weights[(stop_cell + start + np.arange(N))%1024] = 1.
+                weights[(stop_cell + start)%1024] = 1 - weight_on_edge(calibrated, start)
+                weights[(stop_cell + end)%1024] = weight_on_edge(calibrated, end)
+
+                measured_period = (weights * cell_width).sum()
+                if measured_period < nominal_period*0.7 or measured_period > nominal_period*1.3:
+                    continue
+
+                n0 = nominal_period / measured_period
+                n1 = (T - nominal_period) / (T - measured_period)
+
+                correction = n0 * weights + n1 * (1-weights)
+                cell_width *= correction
+
+                # The next line is fishy:
+                #   * it should not be possibl to have a width < 0, but Ritt has shown it is.
+                #   * cells more than double their nominal size, seem impossible, but one cell with 200% width
+                #       can easily be accomplished with 10 cells having only 90% their nominal width.
+                #  Never the less, without this line, the result can become increadibly shitty!
+                cell_width = np.clip(cell_width, 0, 2)  
+                cell_width /= cell_width.mean()
+
+
+    # Regarding the uncertainty of the cell width, we assume that the correction should become
+    # smaller and smaller, the more interations we perform.
+    # so the last corrections should be very close to 1. 
+
+    tc = pd.DataFrame({
+        "cell_width_mean": np.roll(cell_width, 1),
+        "cell_width_std": np.zeros(1024),  # np.full((len(cell_width), np.nan)
+        "number_of_crossings": number_of_zxings_per_cell,
+        "stop_cell": stop_cells,
+        })
+    return tc
+
+
+
+if __name__ == "__main__":
+    args = docopt(__doc__)
+    args["--max_iterations"] = int(args["--max_iterations"])
+    pixel = int(args["--pixel"])
+    gain = args["--gain"]
+    assert gain in ["high", "low"]
     
-    calibrated = d - np.roll(ped_h0, -sc)[:eg.roi]
-    zero_crossings = np.where(np.diff(np.signbit(calibrated)))[0]
+    if not args["--fake"]:
+        event_generator = dr.EventGenerator(
+            args["-i"], 
+            max_events=args["--max_iterations"],
+        )
+        calib = dr.calibration.TakaOffsetCalibration(args["-c"])
+    else:
+        from fake_event_gen import FakeEventGenerator
+        event_generator = FakeEventGenerator(
+            trigger_times=np.arange(10000) * (1/300), # 50k evts at 300Hz
+            #trigger_times=np.random.uniform(0,1e-9, 10000).cumsum(),
+            random_phase=False,
+            sine_frequency=30e6 * (1+1e-7),
+            cell_width=args["-i"],
+        )
+        calib = lambda x: x
 
-    # kind1 and kind2 could be up and down ... but I don't know who is who.
-    kind1 = zero_crossings[0::2]
-    kind2 = zero_crossings[1::2]
+    if not args["--local_tc"]:
+        cell_width_guess=np.ones(1024)
+    else:
+        cell_width_guess=pd.read_csv(args["--local_tc"])["cell_width_mean"].values
 
-    k_names = ["kind1", "kind2"]
-
-    u_cors = []
-    for ki in range(2):
-        k = [kind1, kind2][ki]
-        k_name = k_names[ki]
-        start = k[:-1]
-        end = k[1:] + 1
-
-        before_start = calibrated[k[:-1]]
-        after_start = calibrated[k[:-1] + 1]
-        m_start = after_start - before_start
-        weight_start = 1 + before_start/m_start
-
-        before_end = calibrated[k[1:]]
-        after_end = calibrated[k[1:] + 1]
-        m_end = after_end - before_end
-        weight_end = -before_end/m_end
-
-
-        for i in range(len(before_start)):
-            s, e = start[i], end[i]
-
-            foo = np.roll(ti, -sc)[s:e]
-            if len(foo) < 33-7 or len(foo) > 33+7:
-                continue
-            weights = np.ones_like(foo)
-
-            weights[0] = weight_start[i]
-            weights[-1] = weight_end[i]
-            
-            bar = (weights * foo).sum()
-            
-            u_cor = 1/(bar * unit_of_ti * f_calib)
-            u_cors.append(u_cor)
-            # iterative correction
-            rti = np.roll(ti, -sc)
-            rti[s:e] *= u_cor
-            ti = np.roll(rti, sc)
-    
-
-    if evt.header.event_counter == args["--max_iterations"]:
-        break
+    tc = calc_global_tc(
+        event_generator, 
+        calib, 
+        pixel, 
+        gain, 
+        cell_width_guess)
 
 
-ti = pd.DataFrame(ti, columns=["cell_width"])
-ti.to_csv(args["-o"], index=False)
+    if args["--fake"]:
+        tc["cell_width_truth"] = event_generator.cell_widths / event_generator.cell_widths.mean()
+     
+    tc.to_csv(args["-o"], index=False)
+
