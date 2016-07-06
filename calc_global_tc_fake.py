@@ -20,19 +20,6 @@ import pandas as pd
 from docopt import docopt
 from fake_event_gen import EventGenerator
 
-
-import dragonboard as dr
-import numpy as np
-from tqdm import tqdm
-from docopt import docopt
-import pandas as pd
-from fake_event_gen import EventGenerator
-import pandas as pd
-import matplotlib.pyplot as plt
-import numpy as np
-from docopt import docopt
-
-
 args = docopt(__doc__)
 print(args)
 np.random.seed(0)
