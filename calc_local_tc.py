@@ -9,7 +9,7 @@ Options:
   -o PATH      path to outfile for the cell widths [default: local_tc.csv]
   --pixel N    pixel in which the sine wave should be analysed [default: 0]
   --gain NAME  gain type which should be analysed [default: high]
-  --fake       use FakeEventGenerator, ignores '-i' and '-c'.
+  --fake       use FakeEventGenerator, ignores '-c' and expects '-i' to point to something like local_tc.csv
 """
 import dragonboard as dr
 import numpy as np
@@ -86,6 +86,7 @@ if __name__ == "__main__":
             #trigger_times=np.random.uniform(0,1e-9, 10000).cumsum(),
             random_phase=False,
             sine_frequency=30e6 * (1+1e-7),
+            cell_width=args["-i"],
         )
         calib = lambda x: x
 
