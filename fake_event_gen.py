@@ -17,7 +17,7 @@ EventHeader_v5_1_05 = namedtuple('EventHeader_v5_1_05', [
 
 class FakeEventGenerator:
 
-    def __init__(self, trigger_times, pixel=0, gain="high", roi=1024, random_phase=True, sine_frequency=30e6):
+    def __init__(self, trigger_times, pixel=0, gain="high", roi=1024, random_phase=True, sine_frequency=30e6, electronics_noise=10, cell_width=None):
         self.times = list(trigger_times)
         self.max_events = len(trigger_times)
         self.roi = roi
@@ -26,17 +26,25 @@ class FakeEventGenerator:
         self.event_counter = 0
         self.random_phase = random_phase
         self.sine_frequency = sine_frequency
+        self.electronics_noise = electronics_noise
 
         np.random.seed(0)
 
-        tc = pd.read_csv("local_tc.csv")
-        cell_width = tc.cell_width_mean.values
-        cell_width = np.clip(cell_width, 0.3, 1.7)
-        cell_width /= (cell_width.mean() / 1e-9)
-        self.cell_widths = cell_width
-        #self.cell_widths = np.ones(1024) * 1e-9 + np.random.uniform(-0.5e-9, 0.5e-9, 1024)
-        self.cell_widths /= self.cell_widths.mean()
-        self.cell_widths *= 1e-9
+        if not cell_width is None:
+            try:
+                tc = pd.read_csv(cell_width)
+                cw = tc.cell_width_mean.values
+                cw = np.clip(cw, 0.2, 10)
+                cw /= (cw.mean() / 1e-9)
+                self.cell_widths = cw
+            except:
+                raise
+                self.cell_widths = cell_width
+
+        else:
+            self.cell_widths = np.ones(1024) * 1e-9 + np.random.uniform(-0.5e-9, 0.5e-9, 1024)
+        
+        self.cell_widths /= (self.cell_widths.mean() / 1e-9)
         self.nominal_width = self.cell_widths.mean()
         self.period = self.cell_widths.sum()
 
@@ -51,7 +59,8 @@ class FakeEventGenerator:
             phase = 0
         
         signal = amplitude * np.sin(2 * np.pi * (omega * times + phase))
-        signal += np.random.normal(0, 10, len(signal)).round().astype(np.int32)
+        if self.electronics_noise:
+            signal += np.random.normal(0, self.electronics_noise, len(signal))
         return signal
 
     def __iter__(self):
