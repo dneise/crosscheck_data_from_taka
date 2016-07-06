@@ -140,12 +140,12 @@ try:
         a.hist(residuals,
             bins=100,
             histtype="step",
-            label="cell width residuals $\mu$:{0:.2f} $\sigma$:{1:.2f}".format(residuals.mean(), residuals.std())
+            label="cell width residuals $\sigma$:{1:.3g}".format(residuals.mean(), residuals.std())
             )
         a.hist((foo-bar),
             bins=100,
             histtype="step",
-            label="15 cells width residuals $\mu$:{0:.2f} $\sigma$:{1:.2f}".format((foo-bar).mean(), (foo-bar).std())
+            label="15 cells width residuals $\sigma$:{1:.3g}".format((foo-bar).mean(), (foo-bar).std())
             )
 
         a.set_xlabel("cell width residuals [ns]")
