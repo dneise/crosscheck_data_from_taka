@@ -9,7 +9,7 @@ nominal_cell_width = 1
 cell_width_variation = 0.23
 N_cells = 30   # number of cells of toy drs chip (does not have to 1024 to work
 period = N_cells * nominal_cell_width
-N_trials = 5000000
+N_trials = 100000
 
 def pulse(x, x0=0, sigma=1, A=1):
     y = np.exp(-1/2*((x-x0)/sigma)**2)
@@ -54,24 +54,25 @@ ax[0].plot((cell_width + np.roll(cell_width, -1)) / 2,
 ax[0].legend(loc="best")
 ax[0].grid()
 ax[0].set_xlim(0, N_cells)
+ax[0].set_xlabel("drs4 cell id")
 
-
-
-ax[1].hist(stop_cells, 
-    bins=np.arange(N_cells+1)-0.5, 
-    histtype="step", 
-    label="stop_cells")
-ax[1].plot(cell_width / nominal_cell_width * N_trials / N_cells, 'o', label="cell width scaled")
-ax[1].legend(loc="best")
-ax[1].grid()
-ax[1].set_xlim(0, N_cells)
-
-
-ax[2].hist(trigger_times, 
+ax[1].hist(trigger_times, 
     bins=np.linspace(0, period, 400), 
     histtype="step", 
     label="trigger_times")
+ax[1].legend(loc="best")
+ax[1].grid()
+ax[1].set_xlabel("time [a.u.]")
+
+
+ax[2].hist(stop_cells, 
+    bins=np.arange(N_cells+1)-0.5, 
+    histtype="step", 
+    label="stop_cells")
+#ax[2].plot(cell_width / nominal_cell_width * N_trials / N_cells, 'o', label="cell width scaled")
 ax[2].legend(loc="best")
 ax[2].grid()
+ax[2].set_xlim(0, N_cells)
+ax[2].set_xlabel("drs4 cell id")
 
 plt.show()
