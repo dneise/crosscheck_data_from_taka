@@ -37,16 +37,12 @@ for j in range(100):
 
         pulse_time = trigger_time + period/2
         p = pulse(event_sample_times, x0=pulse_time, sigma=pulse_width, A=pulse_height)
-        X = p.argmax()
-        Xmod = (X + stop_cell) % N_cells
-        max_cell.append(Xmod)
+        max_cell.append((p.argmax() + stop_cell) % N_cells)
     
 
     h, _ = np.histogram(np.array(max_cell), bins=np.arange(N_cells+1)-0.5)
     h = h.astype('f8')
     h /= h.mean() / nominal_cell_width
-
-    #h -= cell_width_B
 
     residuals = np.sqrt(((h - cell_width_B)**2).sum()) / nominal_cell_width
     results.append((len(max_cell)/N_cells, residuals))
@@ -56,9 +52,9 @@ for j in range(100):
     plt.clf()
     plt.plot(RR[0], RR[1], '.:' )
     plt.grid()
-    plt.ylabel("RMS [nominal cell width]")
+    plt.ylabel("SSE [nominal cell width]")
     plt.xlabel("events per DRS4 cell")
     plt.pause(0.01)
-
+plt.ylim(0, 0.05)
 plt.ioff()
 plt.show()
